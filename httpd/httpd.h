@@ -10,6 +10,8 @@
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 #define SIZE 1024
 

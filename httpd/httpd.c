@@ -11,9 +11,7 @@ void print_log(const char* msg,int level)
 		"ERROR",
 		"FATAL",
 	};
-	printf("[%s][%s]\n",msg,level_msg[level%5]);
-
-	
+	printf("[%s][%s]\n",msg,level_msg[level%5]);	
 #endif
 }
 
@@ -50,7 +48,7 @@ int startup(const char* ip,int port)
 }
 /////////////////////////************///////////////////
 //ret > 1, line != '\0',ret = 1&line = '\n', ret <=&&line=='\0'
-int get_line(int sock,char line[],int size)
+static int get_line(int sock,char line[],int size)
 {
 	//read 1 char,one by one
 	char c = '\0';
@@ -77,11 +75,80 @@ int get_line(int sock,char line[],int size)
 			c = '\n';
 	}
 	line[len] = '\0';
+	return len;
 }	
 static void echo_string(int sock)
 {
 
 }
+/////////////////////////////////////////////////
+
+static int echo_www(int sock,char* path,int size)
+{
+	int fd = open(path,O_RDONLY);
+	if(fd < 0)
+	{
+		echo_string(sock);
+		print_log(strerror(errno), FATAL);
+		return 8;
+	}
+	
+	const char* echo_line = "HTTP/1.0 200 OK\r\n";
+	send(sock,echo_line,strlen(echo_line),0);
+	const char* null_line = "\r\n";
+	send(sock,echo_line,strlen(echo_line),0);
+
+	if(sendfile(sock,fd,NULL,size)<0)
+	{
+		echo_string(sock);
+		print_log(strerror(errno),FATAL);
+		return 9;
+	}
+	close(fd);
+	return 0;
+}
+static void drop_header(int sock)
+{	
+	char line[1024];
+	int ret = -1;
+	do{
+		ret = get_line(sock, line,sizeof(line));
+	}while(ret > 0 && strcmp(line,"\n"));
+}
+static int exe_cgi(int sock,char* method,char* path,char* query_string)
+{
+	int contnet_len = -1;
+	if(strcasecmp(method,"GET")==0)
+	{
+		drop_header(sock);
+	}
+	else{//post
+		char line[1024];
+		int ret = -1;
+		do{
+			ret = get_line(sock,line,sizeof(line));
+			if(ret > 0 && (strncmp(line,"Content-Length: ",16)==0))
+			{
+				contnet_len = atoi(&line[16]);
+			}
+		}while(ret > 0&&strcmp(line,"\n"));
+		pid_t pid = fork();
+		if(pid < 0){
+			echo_string(sock);
+			return 11;
+		}
+		else if(pid == 0)//child
+		{
+			execl(path,path,NULL);
+			exit(1);
+		}	
+		else{//father
+			int ret = waitpid(pid,NULL,0);
+		}
+		
+	}
+}
+////////////////////////////////////////////////
 ///////////////wei xian shi xin xi ?????
 //thread zhi xing
 //chu li lian jie
@@ -101,18 +168,20 @@ void *hander_request(void * arg)
 			break;
 		}
 	}while(1);
-#endif
+#else
 //pan ding fang fa
 	int ret = 0;
 	char buf[SIZE];
 	char method[SIZE/10];
 	char url[SIZE];
+	char path[SIZE];
 	
 	int i;
 	int j;
 	
 	//ci chu she zhi CGI flag
 	int cgi = 0;
+	char *query_string = NULL;//qing qiu zi fu chuan
 	if(get_line(sock,buf,sizeof(buf)) <= 0){
 		echo_string(sock);
 		ret = 5;
@@ -151,13 +220,60 @@ void *hander_request(void * arg)
 	url[i] = 0;
 	printf("method : %s, url: %s\n",method,url);
 
+	/////////////////////////////////////////////
+	//chu li GET fang fa zhong ? zi fu
+	query_string = url;
+	while(*query_string != '\0'){
+		if(*query_string =='?'){
+			*query_string = '\0';
+			query_string++;
+			cgi = 1;
+			break;
+		}
+		query_string++;
+	}
+	//ping jie
+	sprintf(path,"wwwroot%s",url);
+	if(path[strlen(path)-1] == '/')
+	{
+		strcat(path,"index.html");
+	}
 
-
-
-
-
+	struct stat st;
+	if(stat(path,&st)!=0)
+	{	
+		echo_string(sock);
+		ret = 7;
+		goto end;
+	}
+	else{
+		if(S_ISDIR(st.st_mode))
+		{
+			strcat(path,"/index.html");
+		}
+		else if((st.st_mode & S_IXUSR)||\
+				(st.st_mode & S_IXGRP)||\
+				(st.st_mode & S_IXOTH))
+		{
+			cgi = 1;
+		}
+		else{
+			
+		}
+		if(cgi)
+		{
+			exe_cgi(sock,method,path,query_string);
+		}
+		else{
+			printf("method : %s ,url :%s, path: %s,cgi: %d, query_string: %s\n",method,url,path,cgi,query_string);
+			drop_header(sock);
+			echo_www(sock,path,st.st_size);
+		}
+	}
 end:
+	printf("quit client\n");
 	close(sock);
 	return (void *)ret;
+#endif
 }
 
